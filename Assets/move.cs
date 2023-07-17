@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using Unity.Burst.CompilerServices;
 using UnityEditor.Experimental.GraphView;
 using UnityEngine;
 
@@ -16,7 +17,7 @@ public class move : MonoBehaviour
     private RaycastHit[] _moveHits = new RaycastHit[5];
     private Vector3 _internalPosition = Vector3.zero;
 
-    const float SWEEP_TEST_EPSILON = 0.02f;
+    const float SWEEP_TEST_EPSILON = 0.01f;
     const int MAX_MOVE_ITERATION = 5;
 
     private void OnValidate()
@@ -64,6 +65,8 @@ public class move : MonoBehaviour
         transform.position = _internalPosition;
     }
 
+    Vector3 debugPos1 = Vector3.zero;
+
     /// <summary>
     /// 박스캐스트 후 가장 가까운 히트의 정보와 박스캐스트의 모든 히트 수를 반환한다.
     /// </summary>
@@ -75,7 +78,7 @@ public class move : MonoBehaviour
     /// <returns></returns>
     int BoxSweepTest(Vector3 wishDir, float wishDist, Vector3 initialPos,BoxCollider box,out RaycastHit closestHit)
     {
-        var hitCount = Physics.BoxCastNonAlloc(initialPos + box.center, box.size * 0.5f, wishDir, _moveHits, Quaternion.identity, wishDist + SWEEP_TEST_EPSILON, -1,QueryTriggerInteraction.Ignore);
+        var hitCount = Physics.BoxCastNonAlloc((initialPos + box.center) + (wishDir * -SWEEP_TEST_EPSILON), box.size * 0.5f, wishDir, _moveHits, Quaternion.identity, wishDist + SWEEP_TEST_EPSILON, -1,QueryTriggerInteraction.Ignore);
         var closestDistInLoop = Mathf.Infinity;
         var closestHitInLoop = new RaycastHit();
         closestHit = new RaycastHit();
@@ -84,9 +87,9 @@ public class move : MonoBehaviour
         {
             if (_moveHits[i].distance < closestDistInLoop)
             {
-                if (_moveHits[i].collider == box)
+                if (_moveHits[i].distance <= 0f || _moveHits[i].collider == box)
                 {
-                    hitCount -= 1;
+                    hitCount--;
                     continue;
                 }
                 closestDistInLoop = _moveHits[i].distance;
@@ -139,8 +142,6 @@ public class move : MonoBehaviour
         if (!ShowDebugMovement) return;
         var wishPos = Vector3.zero;
 
-        //Debug.Log(hitCount);
-
         var constantWishPos = transform.position + PlayerCollider.center + DebugMoveVector;
         Gizmos.color = Color.green;
         Gizmos.DrawCube(constantWishPos, PlayerCollider.size);
@@ -152,9 +153,10 @@ public class move : MonoBehaviour
 
         var tmpPosition = transform.position;
 
-        Gizmos.color = Color.yellow;
+       
         for (numBump = 0; numBump < bumpCount; numBump++)
         {
+            Gizmos.color = Color.yellow;
             var hitcount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude, tmpPosition, PlayerCollider, out RaycastHit hit);
             var lastTmpPos = tmpPosition;
 
@@ -163,6 +165,9 @@ public class move : MonoBehaviour
                 tmpPosition += (hit.distance - SWEEP_TEST_EPSILON) * initMoveVector.normalized;
                 Gizmos.DrawWireCube(tmpPosition, PlayerCollider.size);
                 Gizmos.DrawLine(lastTmpPos, tmpPosition);
+                Gizmos.color = Color.red;
+                Gizmos.DrawRay(tmpPosition, hit.normal);
+
                 initMoveVector -= (hit.distance - SWEEP_TEST_EPSILON) * initMoveVector.normalized;
                 var savedVector = initMoveVector;
                 ClipVelocity(savedVector, hit.normal, out initMoveVector);
@@ -175,14 +180,5 @@ public class move : MonoBehaviour
                 break;
             }
         }
-
-       
-/*        if(hitCount > 0)
-        {
-            Gizmos.color = Color.yellow;
-            Gizmos.DrawCube(wishPos, PlayerCollider.size);
-            Gizmos.DrawLine(transform.position, wishPos);
-        }*/
-        
     }
 }
