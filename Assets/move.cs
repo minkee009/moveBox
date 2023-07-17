@@ -16,7 +16,7 @@ public class move : MonoBehaviour
     private RaycastHit[] _moveHits = new RaycastHit[5];
     private Vector3 _internalPosition = Vector3.zero;
 
-    const float SWEEP_TEST_EPSILON = 0.002f;
+    const float SWEEP_TEST_EPSILON = 0.02f;
     const int MAX_MOVE_ITERATION = 5;
 
     private void OnValidate()
@@ -75,7 +75,7 @@ public class move : MonoBehaviour
     /// <returns></returns>
     int BoxSweepTest(Vector3 wishDir, float wishDist, Vector3 initialPos,BoxCollider box,out RaycastHit closestHit)
     {
-        var hitCount = Physics.BoxCastNonAlloc(initialPos + box.center + (wishDir * -SWEEP_TEST_EPSILON), box.size * 0.5f, wishDir, _moveHits, Quaternion.identity, wishDist, -1,QueryTriggerInteraction.Ignore);
+        var hitCount = Physics.BoxCastNonAlloc(initialPos + box.center, box.size * 0.5f, wishDir, _moveHits, Quaternion.identity, wishDist + SWEEP_TEST_EPSILON, -1,QueryTriggerInteraction.Ignore);
         var closestDistInLoop = Mathf.Infinity;
         var closestHitInLoop = new RaycastHit();
         closestHit = new RaycastHit();
@@ -99,10 +99,44 @@ public class move : MonoBehaviour
         return hitCount;
     }
 
+    /// <summary>
+    /// 속도를 제한한다. 퀘이크 엔진 알고리즘 참조
+    /// </summary>
+    /// <returns></returns>
+    int ClipVelocity(Vector3 inputVelocity, Vector3 normal, out Vector3 outputVelocity, float overbounce = 1.0f)
+    {
+        float backoff = 0.0f;
+        float change = 0.0f;
+        float angle = normal.y;
+        outputVelocity = Vector3.zero;
+
+        int blocked = 0;
+        if (angle > 0)
+            blocked |= 1;
+        if (angle == 0)
+            blocked |= 2;
+
+        backoff = Vector3.Dot(inputVelocity, normal) * overbounce;
+
+        for(int i = 0; i < 3; i++)
+        {
+            change = normal[i] * backoff;
+            outputVelocity[i] = inputVelocity[i] - change;
+        }
+
+        float adjust = Vector3.Dot(outputVelocity, normal);
+        if(adjust < 0.0f)
+        {
+            outputVelocity -= (normal * adjust);
+        }
+
+        return blocked;
+    }
+
     
     private void OnDrawGizmos()
     {
-       
+        if (!ShowDebugMovement) return;
         var wishPos = Vector3.zero;
 
         //Debug.Log(hitCount);
@@ -113,42 +147,35 @@ public class move : MonoBehaviour
         Gizmos.DrawLine(transform.position, constantWishPos);
 
         var initMoveVector = DebugMoveVector;
-        var initMoveVectorMag = DebugMoveVector.magnitude;
-        var currentMoveIteration = 0;
+        int bumpCount = 4;
+        int numBump = 0;
 
         var tmpPosition = transform.position;
 
-        while (ShowDebugMovement && currentMoveIteration < MAX_MOVE_ITERATION && initMoveVectorMag > 0)
+        Gizmos.color = Color.yellow;
+        for (numBump = 0; numBump < bumpCount; numBump++)
         {
-            var hitCount = BoxSweepTest(initMoveVector.normalized, initMoveVectorMag, tmpPosition, PlayerCollider, out RaycastHit hit);
+            var hitcount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude, tmpPosition, PlayerCollider, out RaycastHit hit);
             var lastTmpPos = tmpPosition;
 
-            if (hitCount > 0)
+            if (hitcount > 0)
             {
-                
-                initMoveVectorMag -= (hit.distance - SWEEP_TEST_EPSILON);
                 tmpPosition += (hit.distance - SWEEP_TEST_EPSILON) * initMoveVector.normalized;
-                Gizmos.color = Color.yellow;
-                Gizmos.DrawCube(tmpPosition, PlayerCollider.size);
+                Gizmos.DrawWireCube(tmpPosition, PlayerCollider.size);
                 Gizmos.DrawLine(lastTmpPos, tmpPosition);
-
-                initMoveVector = initMoveVector.normalized * initMoveVectorMag;
-                initMoveVector = Vector3.ProjectOnPlane(initMoveVector, hit.normal);
-                initMoveVectorMag = initMoveVector.magnitude;
+                initMoveVector -= (hit.distance - SWEEP_TEST_EPSILON) * initMoveVector.normalized;
+                var savedVector = initMoveVector;
+                ClipVelocity(savedVector, hit.normal, out initMoveVector);
             }
             else
             {
-                tmpPosition += initMoveVector.normalized * initMoveVectorMag;
-                Gizmos.color = Color.yellow;
-                Gizmos.DrawCube(tmpPosition, PlayerCollider.size);
+                tmpPosition += initMoveVector;
+                Gizmos.DrawWireCube(tmpPosition, PlayerCollider.size);
                 Gizmos.DrawLine(lastTmpPos, tmpPosition);
-                initMoveVectorMag = 0f;
+                break;
             }
-
-
-
-            currentMoveIteration++;
         }
+
        
 /*        if(hitCount > 0)
         {
