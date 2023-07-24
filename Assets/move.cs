@@ -1,29 +1,34 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Drawing.Text;
 using Unity.Burst.CompilerServices;
+using Unity.VisualScripting;
 using UnityEditor.Experimental.GraphView;
 using UnityEngine;
 
+
 [RequireComponent(typeof(BoxCollider))]
-[RequireComponent (typeof(Rigidbody))]
+[RequireComponent(typeof(Rigidbody))]
 public class move : MonoBehaviour
 {
     public BoxCollider PlayerCollider;
     public Rigidbody PlayerRigidbody;
     public bool ShowDebugMovement;
     public Vector3 DebugMoveVector;
+    public Vector3 Velocity { get; private set; }
 
     private RaycastHit[] _moveHits = new RaycastHit[5];
     private Vector3 _internalPosition = Vector3.zero;
 
-    const float SWEEP_TEST_EPSILON = 0.01f;
+    const float SWEEP_TEST_EPSILON = 0.002f;
     const int MAX_MOVE_ITERATION = 5;
 
     private void OnValidate()
     {
         PlayerCollider = GetComponent<BoxCollider>();
         PlayerRigidbody = GetComponent<Rigidbody>();
+        
     }
 
     // Start is called before the first frame update
@@ -34,15 +39,29 @@ public class move : MonoBehaviour
         _internalPosition = transform.position;
     }
 
+    Vector3 currentVelocity = Vector3.zero;
+
     // Update is called once per frame
     void Update()
     {
-        _internalPosition = transform.position;
+       // _internalPosition = transform.position;
         //_internalPosition = transform.position;
         if (Input.GetKeyDown(KeyCode.Space))
         {
-            TryPlayerMove(DebugMoveVector);
+            TryPlayerMove(ref DebugMoveVector);
         }
+
+        float inputX = (Input.GetKey(KeyCode.A) ? -1 : 0) + (Input.GetKey(KeyCode.D) ? 1 : 0);
+        float inputY = (Input.GetKey(KeyCode.S) ? -1 : 0) + (Input.GetKey(KeyCode.W) ? 1 : 0);
+        float inputZ = (Input.GetKey(KeyCode.E) ? -1 : 0) + (Input.GetKey(KeyCode.Q) ? 1 : 0);
+
+        var targetVelocity = new Vector3(inputX, inputZ, inputY) * 6f * Time.deltaTime;
+
+        Velocity = Vector3.Lerp(Velocity, targetVelocity, 6f * Time.deltaTime);
+
+        currentVelocity = Velocity;
+
+        TryPlayerMove(ref currentVelocity);
     }
 
 
@@ -50,18 +69,31 @@ public class move : MonoBehaviour
     /// 미끌어짐 벡터 알고리즘으로 플레이어를 움직임
     /// </summary>
     /// <param name="moveVector"></param>
-    void TryPlayerMove(Vector3 moveVector)
+    void TryPlayerMove(ref Vector3 moveVector)
     {
-        var moveHitsCount = BoxSweepTest(moveVector.normalized, moveVector.magnitude, _internalPosition, PlayerCollider, out RaycastHit hit);
-        if(moveHitsCount > 0)
-        {
-            _internalPosition += moveVector.normalized * (hit.distance - SWEEP_TEST_EPSILON);
-        }
-        else
-        {
-            _internalPosition += moveVector;
-        }
+        Vector3 initMoveVector = moveVector;
 
+        int bumpCount = 0;
+        int numbumps = 4;
+        
+
+        for (bumpCount = 0; bumpCount < numbumps; bumpCount++)
+        {
+            var moveHitsCount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude, _internalPosition, PlayerCollider, out RaycastHit hit);
+            if (moveHitsCount > 0)
+            {
+                _internalPosition += hit.distance * initMoveVector.normalized;
+                initMoveVector -= hit.distance * initMoveVector.normalized;
+                var savedVector = initMoveVector;
+
+                ClipVelocity(savedVector, hit.normal, out initMoveVector);
+            }
+            else
+            {
+                _internalPosition += initMoveVector;
+                break;
+            }
+        }
         transform.position = _internalPosition;
     }
 
@@ -78,7 +110,7 @@ public class move : MonoBehaviour
     /// <returns></returns>
     int BoxSweepTest(Vector3 wishDir, float wishDist, Vector3 initialPos,BoxCollider box,out RaycastHit closestHit)
     {
-        var hitCount = Physics.BoxCastNonAlloc((initialPos + box.center) + (wishDir * -SWEEP_TEST_EPSILON), box.size * 0.5f, wishDir, _moveHits, Quaternion.identity, wishDist + SWEEP_TEST_EPSILON, -1,QueryTriggerInteraction.Ignore);
+        var hitCount = Physics.BoxCastNonAlloc((initialPos + box.center), (box.size - Vector3.one * SWEEP_TEST_EPSILON) * 0.5f, wishDir, _moveHits, Quaternion.identity, wishDist + SWEEP_TEST_EPSILON, -1,QueryTriggerInteraction.Ignore);
         var closestDistInLoop = Mathf.Infinity;
         var closestHitInLoop = new RaycastHit();
         closestHit = new RaycastHit();
@@ -92,6 +124,7 @@ public class move : MonoBehaviour
                     hitCount--;
                     continue;
                 }
+                _moveHits[i].distance -= SWEEP_TEST_EPSILON;
                 closestDistInLoop = _moveHits[i].distance;
                 closestHitInLoop = _moveHits[i];
             }
@@ -153,7 +186,7 @@ public class move : MonoBehaviour
 
         var tmpPosition = transform.position;
 
-       
+
         for (numBump = 0; numBump < bumpCount; numBump++)
         {
             Gizmos.color = Color.yellow;
@@ -162,13 +195,14 @@ public class move : MonoBehaviour
 
             if (hitcount > 0)
             {
-                tmpPosition += (hit.distance - SWEEP_TEST_EPSILON) * initMoveVector.normalized;
+                tmpPosition += hit.distance * initMoveVector.normalized;
                 Gizmos.DrawWireCube(tmpPosition, PlayerCollider.size);
                 Gizmos.DrawLine(lastTmpPos, tmpPosition);
                 Gizmos.color = Color.red;
-                Gizmos.DrawRay(tmpPosition, hit.normal);
+                Gizmos.DrawRay(hit.point, hit.normal * 2.0f);
+                Gizmos.DrawSphere(hit.point, 0.05f);
 
-                initMoveVector -= (hit.distance - SWEEP_TEST_EPSILON) * initMoveVector.normalized;
+                initMoveVector -= hit.distance * initMoveVector.normalized;
                 var savedVector = initMoveVector;
                 ClipVelocity(savedVector, hit.normal, out initMoveVector);
             }
@@ -180,5 +214,8 @@ public class move : MonoBehaviour
                 break;
             }
         }
+
+        Gizmos.color = tmpPosition != constantWishPos ? Color.magenta : Color.green;
+        Gizmos.DrawCube(tmpPosition, PlayerCollider.size);
     }
 }
