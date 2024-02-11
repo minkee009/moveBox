@@ -9,6 +9,9 @@ public class Look : MonoBehaviour
     public Transform altHolder;
     public float scrollScale = 0.7f;
 
+    public float RotX => _rotX;
+    public float RotY => _rotY;
+
     private float _rotX,_rotY;
     private float _currentScroll;
     private float _targetScroll;

@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Drawing.Text;
+using System.Linq;
 using Unity.Burst.CompilerServices;
 using Unity.VisualScripting;
 using UnityEditor.Experimental.GraphView;
@@ -22,14 +23,15 @@ public class Move : MonoBehaviour
 
     private RaycastHit[] _moveHits = new RaycastHit[5];
     private Vector3 _internalPosition = Vector3.zero;
+    private Vector3 _lastTickPostion = Vector3.zero;
     private Collider[] _overlapCols = new Collider[8];
 
     public bool isLerpMotion;
     public float speed;
 
-    const float SWEEP_TEST_EPSILON = 0.002f;
-    const float SWEEP_TEST_BIAS = 0.0002f;
-    const int MAX_MOVE_ITERATION = 5;
+    const float SWEEP_TEST_EPSILON = 0.0002f;
+    const float COLLISION_OFFSET = 0.002f;
+    const int MAX_MOVE_ITERATION = 4;
     const float MIN_PUSHBACK_DIST = 0.00005f;
 
     private float _inputX, _inputY, _inputZ;
@@ -39,6 +41,7 @@ public class Move : MonoBehaviour
         playerCollider = GetComponent<BoxCollider>();
         playerRigidbody = GetComponent<Rigidbody>();
     }
+    
 
     // Start is called before the first frame update
     void Start()
@@ -68,6 +71,8 @@ public class Move : MonoBehaviour
         _inputZ = (Input.GetKey(KeyCode.E) ? -1 : 0) + (Input.GetKey(KeyCode.Q) ? 1 : 0);
     }
 
+    float _lastTickTime = 0f;
+
     // Update is called once per frame
     void FixedUpdate()
     {
@@ -77,7 +82,17 @@ public class Move : MonoBehaviour
 
         Velocity = currentVelocity;
 
+        _lastTickPostion = _internalPosition;
+
         TryPlayerMove(isLerpMotion ? currentVelocity : targetVelocity, true);
+
+        _lastTickTime = Time.time;
+    }
+
+    private void LateUpdate()
+    {
+        float interpolationFactor = (Time.time - _lastTickTime) / (Time.fixedDeltaTime);
+        transform.position = Vector3.Lerp(_lastTickPostion,_internalPosition, interpolationFactor);
     }
 
     /// <summary>
@@ -87,23 +102,27 @@ public class Move : MonoBehaviour
     /// <param name="useCamDir">카메라 방향 사용여부</param>
     void TryPlayerMove(Vector3 moveVector,bool useCamDir = false)
     {
-        Vector3 initMoveVector = useCamDir ? camHolder.TransformVector(moveVector) : moveVector;
-        _internalPosition = transform.position;
+        if(moveVector.magnitude < COLLISION_OFFSET)
+        {
+            return;
+        }
+
+        Vector3 initMoveVector = useCamDir ? Quaternion.Euler(0, camHolder.eulerAngles.y, 0) * moveVector : moveVector;
 
         //푸쉬 백(오버랩핑)
         int pushBacks = BoxPushBack(_internalPosition, playerCollider, out Vector3[] pbVec);
 
-        if(pushBacks > 0)
+        if (pushBacks > 0)
         {
-            for (int i = 0;  i < pushBacks; i++)
+            for (int i = 0; i < pushBacks; i++)
             {
-                //Debug.Log(pbVec[i]);
-                //Debug.DrawRay(transform.position, pbVec[i],Color.cyan);
+                _internalPosition += pbVec[i].normalized * (pbVec[i].magnitude + MIN_PUSHBACK_DIST);
 
-                _internalPosition += pbVec[i];
-
-                //Vector3 newVel = -Vector3.Project(initMoveVector, pbVec[i].normalized);
-                //initMoveVector -= Vector3.ProjectOnPlane(initMoveVector, newVel.normalized);
+                if (pbVec[i].sqrMagnitude > 0)
+                {
+                    Vector3 newVel = -Vector3.Project(initMoveVector, pbVec[i].normalized);
+                    initMoveVector -= Vector3.ProjectOnPlane(initMoveVector, newVel.normalized);
+                }
             }
         }
 
@@ -112,14 +131,17 @@ public class Move : MonoBehaviour
         int bumpCount = MAX_MOVE_ITERATION;
         for (numBump = 0; numBump < bumpCount; numBump++)
         {
-            int hitCount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude, _internalPosition, playerCollider, out RaycastHit hit);
+            int hitCount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider, out RaycastHit hit);
             if (hitCount > 0)
             {
-                _internalPosition += hit.distance * initMoveVector.normalized;
-                initMoveVector -= hit.distance * initMoveVector.normalized;
-                Vector3 savedVector = initMoveVector;
+                var dist = Mathf.Max(0.0f, hit.distance - COLLISION_OFFSET);
 
-                ClipVelocity(savedVector, hit.normal, out initMoveVector);
+                _internalPosition += dist * initMoveVector.normalized;
+                initMoveVector -= dist * initMoveVector.normalized;
+
+                //initMoveVector = Vector3.ProjectOnPlane(initMoveVector, hit.normal);
+
+                ClipVelocity(initMoveVector, hit.normal, out initMoveVector);
             }
             else
             {
@@ -127,7 +149,6 @@ public class Move : MonoBehaviour
                 break;
             }
         }
-        transform.position = _internalPosition;
     }
 
     /// <summary>
@@ -141,20 +162,30 @@ public class Move : MonoBehaviour
     /// <returns>유효한 충돌 수</returns>
     int BoxSweepTest(Vector3 wishDir, float wishDist, Vector3 initialPos,BoxCollider box,out RaycastHit closestHit)
     {
-        var hitCount = Physics.BoxCastNonAlloc(initialPos + box.center, box.size * 0.5f, wishDir, _moveHits, Quaternion.identity, wishDist + SWEEP_TEST_BIAS + SWEEP_TEST_EPSILON , -1,QueryTriggerInteraction.Ignore);
+        var hitCount = Physics.BoxCastNonAlloc(
+            initialPos + box.center + (wishDir * -SWEEP_TEST_EPSILON), 
+            box.size * 0.5f, wishDir, 
+            _moveHits, Quaternion.identity, 
+            wishDist + SWEEP_TEST_EPSILON , 
+            -1,
+            QueryTriggerInteraction.Ignore);
+
         var closestDistInLoop = Mathf.Infinity;
         var closestHitInLoop = new RaycastHit();
         closestHit = new RaycastHit();
 
+        var validHitCount = hitCount;
+
         for (int i = 0; i < hitCount; i++)
         {
+            _moveHits[i].distance -= SWEEP_TEST_EPSILON;
             if (_moveHits[i].distance < closestDistInLoop)
             {
-                if (_moveHits[i].distance <= 0f 
-                    || _moveHits[i].collider == box
-                    || Vector3.Dot(_moveHits[i].normal,wishDir) >= 0f)
+                if (_moveHits[i].distance <= 0f
+                    || _moveHits[i].collider.isTrigger
+                    || _moveHits[i].collider == box)
                 {
-                    hitCount--;
+                    validHitCount--;
                     continue;
                 }
                 closestDistInLoop = _moveHits[i].distance;
@@ -163,9 +194,9 @@ public class Move : MonoBehaviour
         }
 
         closestHit = closestHitInLoop;
-        closestHit.distance -= SWEEP_TEST_EPSILON;
+        
 
-        return hitCount;
+        return validHitCount;
     }
 
     /// <summary>
@@ -193,7 +224,8 @@ public class Move : MonoBehaviour
             for(int i = 0; i < overlaps; i++)
             {
                 var other = _overlapCols[i];
-                if(other == box)
+                if(other == box
+                    || other.isTrigger)
                 {
                     validOverlaps--;
                     continue;
@@ -202,12 +234,10 @@ public class Move : MonoBehaviour
                 Vector3 otherPosition = other.gameObject.transform.position;
                 Quaternion otherRotation = other.gameObject.transform.rotation;
 
-                if (Physics.ComputePenetration(box, initialPos, Quaternion.identity, other, otherPosition, otherRotation,
+                if (Physics.ComputePenetration(box, initialPos + box.center, Quaternion.identity, other, otherPosition, otherRotation,
                         out pbDir, out pbDist))
                 {
-                    pbVec[elmentCount++] = pbDir * (pbDist + MIN_PUSHBACK_DIST);
-
-                    Debug.Log(pbVec[elmentCount]);
+                    pbVec[elmentCount++] = pbDir * pbDist;
                 }
                 else
                 {
@@ -220,7 +250,7 @@ public class Move : MonoBehaviour
     }
 
     /// <summary>
-    /// 속도를 제한한다. 퀘이크 엔진 알고리즘 참조
+    /// 속도를 제한하고 꺾는다. 퀘이크 엔진 알고리즘 참조
     /// </summary>
     /// <returns>충돌 플래그</returns>
     int ClipVelocity(Vector3 inputVelocity, Vector3 normal, out Vector3 outputVelocity, float overbounce = 1.0f)
@@ -230,11 +260,11 @@ public class Move : MonoBehaviour
         float angle = normal.y;
         outputVelocity = Vector3.zero;
 
-        int blocked = 0;
+        int blocked = 0x00;
         if (angle > 0)
-            blocked |= 1;
+            blocked |= 0x01;
         if (angle == 0)
-            blocked |= 2;
+            blocked |= 0x02;
 
         backoff = Vector3.Dot(inputVelocity, normal) * overbounce;
 
@@ -265,28 +295,47 @@ public class Move : MonoBehaviour
         Gizmos.DrawCube(constantWishPos, playerCollider.size);
         Gizmos.DrawLine(transform.position, constantWishPos);
 
+        int pushBacks = BoxPushBack(_internalPosition, playerCollider, out Vector3[] pbVec);
+
+        if (pushBacks > 0)
+        {
+            for (int i = 0; i < pushBacks; i++)
+            {
+                Debug.Log(pbVec[i]);
+                Debug.DrawRay(transform.position, pbVec[i], Color.cyan);
+
+                _internalPosition += pbVec[i].normalized * (pbVec[i].magnitude + COLLISION_OFFSET);
+
+                if (pbVec[i].sqrMagnitude > 0)
+                {
+                    Vector3 newVel = -Vector3.Project(initMoveVector, pbVec[i].normalized);
+                    initMoveVector -= Vector3.ProjectOnPlane(initMoveVector, newVel.normalized);
+                }
+            }
+        }
+
         int bumpCount = MAX_MOVE_ITERATION;
         int numBump = 0;
         var tmpPosition = transform.position;
 
         for (numBump = 0; numBump < bumpCount; numBump++)
         {
-            Gizmos.color = Color.yellow;
-            var hitcount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude, tmpPosition, playerCollider, out RaycastHit hit);
+            Gizmos.color = Color.yellow + new Color(-numBump/4f,-numBump/4f,0f);
+            var hitcount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude + COLLISION_OFFSET, tmpPosition, playerCollider, out RaycastHit hit);
             var lastTmpPos = tmpPosition;
 
             if (hitcount > 0)
             {
-                tmpPosition += hit.distance * initMoveVector.normalized;
+                var dist = Mathf.Max(0.0f, hit.distance - COLLISION_OFFSET);
+                tmpPosition += dist * initMoveVector.normalized;
                 Gizmos.DrawWireCube(tmpPosition, playerCollider.size);
                 Gizmos.DrawLine(lastTmpPos, tmpPosition);
                 Gizmos.color = Color.red;
-                Gizmos.DrawRay(hit.point, hit.normal * 2.0f);
+                Gizmos.DrawRay(hit.point, hit.normal);
                 Gizmos.DrawSphere(hit.point, 0.05f);
 
-                initMoveVector -= hit.distance * initMoveVector.normalized;
-                var savedVector = initMoveVector;
-                ClipVelocity(savedVector, hit.normal, out initMoveVector);
+                initMoveVector -= dist * initMoveVector.normalized;
+                ClipVelocity(initMoveVector, hit.normal, out initMoveVector);
             }
             else
             {
@@ -298,7 +347,10 @@ public class Move : MonoBehaviour
         }
 
         Gizmos.color = tmpPosition != constantWishPos ? Color.magenta : Color.green;
-        Gizmos.DrawCube(tmpPosition, playerCollider.size);
+
+        Gizmos.color -= new Color(0, 0, 0, 0.3f);
+
+        Gizmos.DrawCube(tmpPosition, playerCollider.size - Vector3.one * 0.002f);
     }
 
 }
