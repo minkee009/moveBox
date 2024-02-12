@@ -34,6 +34,8 @@ public class Move : MonoBehaviour
     const int MAX_MOVE_ITERATION = 4;
     const float MIN_PUSHBACK_DIST = 0.00005f;
 
+    public float skinWidth = 0.01f;
+
     private float _inputX, _inputY, _inputZ;
 
     private void OnValidate()
@@ -129,6 +131,9 @@ public class Move : MonoBehaviour
         //½ºÀ¬
         int numBump = 0;
         int bumpCount = MAX_MOVE_ITERATION;
+        Vector3 originDir = initMoveVector.normalized;
+        Vector3 prevPlaneNormal = Vector3.zero;
+
         for (numBump = 0; numBump < bumpCount; numBump++)
         {
             int hitCount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider, out RaycastHit hit);
@@ -139,9 +144,17 @@ public class Move : MonoBehaviour
                 _internalPosition += dist * initMoveVector.normalized;
                 initMoveVector -= dist * initMoveVector.normalized;
 
-                //initMoveVector = Vector3.ProjectOnPlane(initMoveVector, hit.normal);
+                ClipVelocity(initMoveVector, hit.normal, out Vector3 outVec);
 
-                ClipVelocity(initMoveVector, hit.normal, out initMoveVector);
+                if(numBump > 0)
+                {
+                    var creaseDir = Vector3.Cross(hit.normal, prevPlaneNormal).normalized;
+                    outVec = Vector3.Project(initMoveVector, creaseDir);
+                }
+
+                initMoveVector = outVec;
+
+                prevPlaneNormal = hit.normal;
             }
             else
             {
@@ -172,7 +185,6 @@ public class Move : MonoBehaviour
 
         var closestDistInLoop = Mathf.Infinity;
         var closestHitInLoop = new RaycastHit();
-        closestHit = new RaycastHit();
 
         var validHitCount = hitCount;
 
@@ -197,6 +209,44 @@ public class Move : MonoBehaviour
         
 
         return validHitCount;
+    }
+
+    int BoxSweepFTest(Vector3 wishDir, float wishDist, Vector3 initialPos, BoxCollider box, out RaycastHit closestHit)
+    {
+
+        Vector3 skinHE = new Vector3(skinWidth, skinWidth, skinWidth);
+        var hitCount = Physics.BoxCastNonAlloc(
+            initialPos + box.center,
+            box.size * 0.5f - skinHE, wishDir,
+            _moveHits, Quaternion.identity,
+            wishDist + skinWidth,
+            -1,
+            QueryTriggerInteraction.Ignore);
+
+        var closestDistInLoop = Mathf.Infinity;
+        var closestHitInLoop = new RaycastHit();
+        int validHit = hitCount;
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            _moveHits[i].distance -= skinWidth;
+            if (_moveHits[i].distance < closestDistInLoop)
+            {
+                if (_moveHits[i].distance <= skinWidth
+                    || _moveHits[i].collider.isTrigger 
+                    || _moveHits[i].collider == box)
+                {
+                    validHit--;
+                    continue;
+                }
+                closestDistInLoop = _moveHits[i].distance;
+                closestHitInLoop = _moveHits[i];
+            }
+        }
+
+        closestHit = closestHitInLoop;
+
+        return validHit;
     }
 
     /// <summary>
@@ -317,6 +367,8 @@ public class Move : MonoBehaviour
         int bumpCount = MAX_MOVE_ITERATION;
         int numBump = 0;
         var tmpPosition = transform.position;
+        var originDir = initMoveVector.normalized;
+        var prevPlaneNormal = Vector3.zero;
 
         for (numBump = 0; numBump < bumpCount; numBump++)
         {
@@ -335,7 +387,24 @@ public class Move : MonoBehaviour
                 Gizmos.DrawSphere(hit.point, 0.05f);
 
                 initMoveVector -= dist * initMoveVector.normalized;
-                ClipVelocity(initMoveVector, hit.normal, out initMoveVector);
+
+                ClipVelocity(initMoveVector, hit.normal, out Vector3 outVec);
+
+                if (numBump > 0)
+                {
+                    Gizmos.color = Color.blue;
+
+
+                    var creaseDir = Vector3.Cross(hit.normal, prevPlaneNormal).normalized;
+                    Gizmos.DrawRay(hit.point, creaseDir);
+
+                    outVec = Vector3.Project(initMoveVector, creaseDir);
+                    Gizmos.color = Color.red;
+                }
+
+                initMoveVector = outVec;
+
+                prevPlaneNormal = hit.normal;
             }
             else
             {
