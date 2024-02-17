@@ -1,14 +1,5 @@
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Drawing.Text;
-using System.Linq;
-using Unity.Burst.CompilerServices;
 using Unity.VisualScripting;
-using UnityEditor.Experimental.GraphView;
-using UnityEditorInternal;
 using UnityEngine;
-
 
 [RequireComponent(typeof(BoxCollider))]
 [RequireComponent(typeof(Rigidbody))]
@@ -19,24 +10,29 @@ public class Move : MonoBehaviour
     public Rigidbody playerRigidbody;
     public bool showDebugMovement;
     public Vector3 debugMoveVector;
+    public float debugMoveDeltaTime = 0.02f;
     public Vector3 Velocity { get; private set; }
 
     private RaycastHit[] _moveHits = new RaycastHit[5];
     private Vector3 _internalPosition = Vector3.zero;
     private Vector3 _lastTickPostion = Vector3.zero;
-    private Collider[] _overlapCols = new Collider[8];
+    private Collider[] _overlapCols = new Collider[MAX_OVERLAP_COLS];
 
-    public bool isLerpMotion;
+    public bool AutoJumping;
     public float speed;
 
     const float SWEEP_TEST_EPSILON = 0.0002f;
     const float COLLISION_OFFSET = 0.002f;
+    const int MAX_OVERLAP_COLS = 3;
     const int MAX_MOVE_ITERATION = 4;
-    const float MIN_PUSHBACK_DIST = 0.00005f;
+    const int MAX_CLIP_PLANES = 5;
+    const float MIN_PUSHBACK_DIST = 0.0005f;
+    const float NON_JUMP_VELOCITY = 2.667f;
 
-    public float skinWidth = 0.01f;
-
+    private Vector3 _scaledMoveInput;
     private float _inputX, _inputY, _inputZ;
+    private bool _jumpButtonPressed;
+    private float _fallVelocity;
 
     private void OnValidate()
     {
@@ -59,109 +55,630 @@ public class Move : MonoBehaviour
     {
         // _internalPosition = transform.position;
         //_internalPosition = transform.position;
-        if (Input.GetKeyDown(KeyCode.Space))
-        {
-            TryPlayerMove(debugMoveVector);
-        }
+        //if (Input.GetKeyDown(KeyCode.Space))
+        //{
+        //    TryPlayerMove(debugMoveVector, debugMoveDeltaTime);
+        //}
 
-        if (Input.GetMouseButtonDown(1))
-            isLerpMotion = !isLerpMotion;
 
+        if(!_jumpButtonPressed)
+            _jumpButtonPressed = AutoJumping ? Input.GetKey(KeyCode.Space) : Input.GetKeyDown(KeyCode.Space);
 
         _inputX = (Input.GetKey(KeyCode.A) ? -1 : 0) + (Input.GetKey(KeyCode.D) ? 1 : 0);
         _inputY = (Input.GetKey(KeyCode.S) ? -1 : 0) + (Input.GetKey(KeyCode.W) ? 1 : 0);
-        _inputZ = (Input.GetKey(KeyCode.E) ? -1 : 0) + (Input.GetKey(KeyCode.Q) ? 1 : 0);
+        _inputZ = 0f;//(Input.GetKey(KeyCode.Q) ? -1 : 0) + (Input.GetKey(KeyCode.E) ? 1 : 0);
+
+        _scaledMoveInput = new Vector3(_inputX, _inputZ, _inputY).normalized;
     }
 
     float _lastTickTime = 0f;
 
+    public bool interpolation;
     // Update is called once per frame
     void FixedUpdate()
     {
-        var targetVelocity = new Vector3(_inputX, _inputZ, _inputY).normalized * speed * Time.deltaTime;
-
-        currentVelocity = Vector3.Lerp(currentVelocity, targetVelocity, 1 - Mathf.Exp(-6f * Time.deltaTime));
-
-        Velocity = currentVelocity;
-
         _lastTickPostion = _internalPosition;
 
-        TryPlayerMove(isLerpMotion ? currentVelocity : targetVelocity, true);
+        PlayerMove();
+        //TryPlayerMove(Quaternion.Euler(0, camHolder.eulerAngles.y, 0) * (isLerpMotion ? currentVelocity : targetVelocity), Time.deltaTime);
 
         _lastTickTime = Time.time;
+
+        if(!interpolation)
+            transform.position = _internalPosition;
     }
 
     private void LateUpdate()
     {
+        if (!interpolation)
+            return;
+
         float interpolationFactor = (Time.time - _lastTickTime) / (Time.fixedDeltaTime);
         transform.position = Vector3.Lerp(_lastTickPostion,_internalPosition, interpolationFactor);
+    }
+
+
+    void CategorizePosition()
+    {
+        float zvel = Velocity.y;
+        //bool bMovingUp = zvel > 0.0f;
+        bool bMobingUpRapidly = zvel > NON_JUMP_VELOCITY;
+
+        if(bMobingUpRapidly)
+        {
+            SetGroundEntity(new RaycastHit());
+        }
+        else
+        {
+            var start = _internalPosition;
+            var end = _internalPosition + (Vector3.down * 0.0381f);
+            var dest = end - start;
+            var pm = BoxTraceNonFilter(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+            pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
+            //var fraction = pm.distance / dest.magnitude;
+
+            if (ReferenceEquals(pm.transform, null) || pm.normal.y < 0.7f)
+            {
+                SetGroundEntity(new RaycastHit());
+            }
+            else 
+            {
+                SetGroundEntity(pm);
+            }
+        }
+    }
+
+    void SetGroundEntity(RaycastHit hit)
+    {
+        GameObject newGround = hit.transform != null ? hit.transform.gameObject : null;
+        GameObject oldGround = _ground;
+
+        //Vector3 vecBaseVelocity = BaseVelocity;
+
+        if(!ReferenceEquals(newGround, null) && ReferenceEquals(oldGround, null))
+        {
+            //vecBaseVelocity -= newGround.GetComponent<xxx>().Velocity;
+            //vecBaseVelocity.y =  newGround.GetComponent<xxx>().Velocity.y;
+        }
+
+        else if(!ReferenceEquals(oldGround, null) && ReferenceEquals(newGround, null))
+        {
+            //vecBaseVelocity += oldGround.GetComponent<xxx>().Velocity;
+            //vecBaseVelocity.y =  oldGround.GetComponent<xxx>().Velocity.y;
+        }
+
+        //BaseVelocity = vecBaseVelocity;
+
+        //수영관련 코드
+        _ground = newGround;
+    }
+
+    GameObject _ground;
+
+    void CheckParameters()
+    {
+        var sv_maxspeed = 6.096f;
+        float spd;
+
+        var cl_forwardspeed = 8.5725f;
+        var cl_sidespeed = 8.5725f;
+
+        _inputX *= cl_forwardspeed;
+        _inputY *= cl_sidespeed;
+        _inputZ *= cl_forwardspeed;
+
+        spd = (_inputX * _inputX) + 
+            (_inputY * _inputY) + 
+            (_inputZ * _inputZ);
+
+        if(spd != 0.0f && spd > sv_maxspeed * sv_maxspeed)
+        {
+            float fRatio = sv_maxspeed / Mathf.Sqrt(spd);
+            _inputX *= fRatio;
+            _inputY *= fRatio;
+            _inputZ *= fRatio;
+        }
+    }
+
+    void PlayerMove()
+    {
+        CheckParameters();
+
+        if(Velocity.y > 4.7625f)
+        {
+            SetGroundEntity(new RaycastHit()); //null 셋팅
+        }
+
+        if (ReferenceEquals(_ground, null))
+        {
+            _fallVelocity = -Velocity.y;
+        }
+
+        //Duck(); //앉기 관련 코드
+
+        FullWalkMove();
+    }
+
+    void FullWalkMove()
+    {
+        var sv_gravity = 15.24f;
+        Velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
+        //BaseVelocity = new Vector3(BaseVelocity.x,0f,BaseVelocity.z);
+        //속도 NaN 체크
+
+        CheckJumpButton();
+
+        if(!ReferenceEquals(_ground, null))
+        {
+            Velocity = new Vector3(Velocity.x, 0f, Velocity.z);
+            Friction();
+        }
+
+        if(!ReferenceEquals(_ground, null))
+        {
+            WalkMove();
+        }
+        else
+        {
+            AirMove();
+        }
+
+        CategorizePosition();
+
+        Velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
+
+        if (!ReferenceEquals(_ground,null))
+        {
+            Velocity = new Vector3(Velocity.x,0f,Velocity.z);
+        }
+
+        //CheckFalling();
+    }
+
+    void AirMove()
+    {
+        Vector3 wishvel = default;
+        float fmove, smove;
+        Vector3 wishdir;
+        float wishspeed;
+
+        Vector3 forward = camHolder.transform.GetChild(0).forward;
+        Vector3 right = camHolder.transform.GetChild(0).right;
+        
+        forward = new Vector3(forward.x,0f,forward.z);
+        right = new Vector3(right.x,0f,right.z);
+
+        forward.Normalize();
+        right.Normalize();
+
+        fmove = _inputY;
+        smove = _inputX;
+
+        for (int i = 0; i < 3; i++)
+            wishvel[i] = (forward[i] * fmove) + (right[i] * smove);
+
+        wishvel.y = 0.0f;
+
+        wishdir = wishvel.normalized;
+        wishspeed = wishvel.magnitude;
+
+        var sv_maxspeed = 6.096f;
+        if (wishspeed != 0.0f && wishspeed > sv_maxspeed)
+        {
+            wishvel *= sv_maxspeed / wishspeed;
+            wishspeed = sv_maxspeed;
+        }
+
+        var sv_airaccelerate = 12.0f;
+
+        AirAccelerate(ref wishdir, wishspeed, sv_airaccelerate);
+
+        TryPlayerMove(Velocity, Time.deltaTime);
+    }
+
+    void WalkMove()
+    {
+        Vector3 wishvel;
+        float spd;
+        float fmove, smove;
+        Vector3 wishdir;
+        float wishspeed;
+
+        Vector3 dest;
+
+        GameObject oldGround = _ground;
+
+
+        fmove = _inputY;
+        smove = _inputX;
+
+        wishvel = Quaternion.Euler(0, camHolder.eulerAngles.y, 0) * new Vector3(smove, 0f, fmove);
+        wishdir = wishvel.normalized;
+
+        wishspeed = wishvel.magnitude;
+
+        var sv_maxspeed = 6.096f;
+        if (wishspeed != 0.0f && wishspeed > sv_maxspeed)
+        {
+            //wishvel *= sv_maxspeed / wishspeed;
+            wishspeed = sv_maxspeed;
+        }
+
+        var sv_accelerate = 5.6f; //계수인지 유닛인지 몰?루 <- 계수로 추정
+        Velocity = new Vector3(Velocity.x, 0f, Velocity.z);
+        Accelerate(ref wishdir, wishspeed, sv_accelerate);
+        Velocity = new Vector3(Velocity.x, 0f, Velocity.z);
+
+        //Velocity += BaseVelocity;
+
+        spd = Velocity.magnitude;
+
+        if(spd < 0.01905f)
+        {
+            Velocity = Vector3.zero;
+            //Velocity -= Basevelocity;
+            return;
+        }
+
+        dest = new Vector3(Velocity.x, 0f, Velocity.z) * Time.deltaTime;
+        //mv->m_outWishVel += wishdir * wishspeed;
+
+
+        var pm = BoxTraceNonFilter(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+        pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
+
+        var fraction = pm.distance / dest.magnitude;
+
+        if(fraction == 1.0f)
+        {
+            _internalPosition += dest;
+
+            StayOnGround();
+            return;
+        }
+
+        if(ReferenceEquals(oldGround,null))
+        {
+            return;
+        }
+
+        StepMove();
+
+        //Velocity -= BaseVelocity;
+
+        StayOnGround();
+    }
+
+    void StepMove()
+    {
+
+        var initPos = _internalPosition;
+        var initVel = Velocity;
+
+        TryPlayerMove(Velocity, Time.deltaTime);
+
+        var downPos = _internalPosition;
+        var downVel = Velocity;
+
+        _internalPosition = initPos;
+        Velocity = initVel;
+
+        var sv_stepsize = 0.3429f;
+        var dest = Vector3.up * sv_stepsize;
+        var pm = BoxTraceNonFilter(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+        pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
+
+        var fraction = pm.distance / dest.magnitude;
+
+        if(fraction > 0.0f)
+        {
+            _internalPosition += pm.distance * dest.normalized;
+        }
+
+        TryPlayerMove(Velocity, Time.deltaTime);
+
+        dest = Vector3.down * sv_stepsize;
+        pm = BoxTrace(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+        pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
+
+        fraction = pm.distance / dest.magnitude;
+
+        if(!ReferenceEquals(pm.transform,null)
+            && pm.normal.y < 0.7f)
+        {
+            _internalPosition = downPos;
+            Velocity = downVel;
+            return;
+        }
+
+        if(fraction > 0.0f)
+        {
+            _internalPosition += dest.normalized * (pm.distance);
+        }
+
+        var updist = (initPos - _internalPosition).sqrMagnitude;
+        var downdist = (downPos - _internalPosition).sqrMagnitude;
+
+
+
+        if(downdist > updist)
+        {
+            _internalPosition = downPos;
+            Velocity = downVel;
+        }
+        else
+        {
+            Velocity = new Vector3(Velocity.x, downVel.y, Velocity.z);
+        }
+    }
+
+    void StayOnGround()
+    {
+        var sv_stepsize = 0.3429f;
+        var start = _internalPosition + (Vector3.up * 0.0381f);
+        var end = _internalPosition + (Vector3.down * sv_stepsize);
+        var dest = start - _internalPosition;
+        var pm = BoxTraceNonFilter(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+        pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
+
+        start = _internalPosition + dest.normalized * pm.distance;
+
+        dest = end - start;
+
+        pm = BoxTraceNonFilter(dest.normalized, dest.magnitude + COLLISION_OFFSET, start, playerCollider);
+        pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
+
+        var fraction = pm.distance / dest.magnitude;
+
+        if(fraction > 0.0f 
+            && fraction < 1.0f
+            && pm.normal.y > 0.7f)
+        {
+            _internalPosition = start + dest.normalized * (pm.distance);
+        }
+    }
+
+    void Accelerate(ref Vector3 wishdir, float wishspeed, float accel)
+    {
+        float addspeed, accelspeed, currentspeed;
+
+        currentspeed = Vector3.Dot(Velocity,wishdir);
+
+        addspeed = wishspeed - currentspeed;
+
+        if (addspeed <= 0)
+            return;
+
+        accelspeed = accel * Time.deltaTime * wishspeed; //*surfaceFriction;
+
+        if(accelspeed >addspeed)
+            accelspeed = addspeed;
+
+        Velocity += wishdir * accelspeed;
+    }
+
+    void AirAccelerate(ref Vector3 wishdir, float wishspeed, float accel)
+    {
+        float addspeed, accelspeed, currentspeed;
+        float wishspd;
+
+        wishspd = wishspeed;
+
+        if (wishspd > 0.5715f)
+            wishspd = 0.5715f;
+
+        currentspeed = Vector3.Dot(Velocity,wishdir);
+
+        addspeed = wishspd - currentspeed;
+
+        if (addspeed <= 0f)
+            return;
+
+        accelspeed = accel * wishspeed * Time.deltaTime;//*surfaceFriction;
+
+        if(accelspeed >addspeed)
+            accelspeed = addspeed;
+
+        Velocity += accelspeed * wishdir;
+    }
+
+    bool CheckJumpButton()
+    {
+        if (_jumpButtonPressed) _jumpButtonPressed = false;
+        else return false;
+        if (ReferenceEquals(_ground, null)) return false;
+
+        //if (ducking) return false;
+
+        SetGroundEntity(new RaycastHit());
+
+        var flMul = 5.111651396564518f;
+        var sv_gravity = 15.24f;
+
+        Velocity = new Vector3(Velocity.x, flMul, Velocity.z);
+        Velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
+        //duckjump 시간 설정
+
+        return true;
+    }
+
+    void Friction()
+    {
+        float speed, newspeed, control;
+        float friction;
+        float drop;
+
+        var sv_friction = 4f; //계수인지 유닛인지 몰?루 -> 계수로 추정됨, 유닛인 경우 0.01905f 곱하기
+        var sv_stopspeed = 1.905f;
+
+        speed = Velocity.magnitude;
+        if (speed < 0.001905f)
+        {
+            return;
+        }
+        drop = 0;
+
+        if (!ReferenceEquals(_ground, null))
+        {
+            friction = sv_friction; // * _ground.GetComponent<xxx>().friction;
+
+            control = (speed < sv_stopspeed) ? sv_stopspeed : speed;
+
+            drop += control * friction * Time.deltaTime;
+        }
+
+        newspeed = speed - drop;
+        if (newspeed < 0.0f)
+            newspeed = 0.0f;
+
+        if(newspeed != speed)
+        {
+            newspeed /= speed;
+
+            Velocity *= newspeed;
+        }
+
+        //outWishVel -= (0.01905f - newspeed) * Velocity;
     }
 
     /// <summary>
     /// 충돌 미끌어짐 알고리즘으로 플레이어를 움직임
     /// </summary>
     /// <param name="moveVector"></param>
-    /// <param name="useCamDir">카메라 방향 사용여부</param>
-    void TryPlayerMove(Vector3 moveVector,bool useCamDir = false)
+    /// <param name="deltaTime"></param>
+    int TryPlayerMove(Vector3 moveVector, float deltaTime)
     {
-        if(moveVector.magnitude < COLLISION_OFFSET)
-        {
-            return;
-        }
+        int blocked = 0;
+        int numPlanes = 0;
+        int numBumps;
+        int bumpCount = MAX_MOVE_ITERATION;
 
-        Vector3 initMoveVector = useCamDir ? Quaternion.Euler(0, camHolder.eulerAngles.y, 0) * moveVector : moveVector;
+        float allFraction = 0;
+        float timeleft = deltaTime;
+
+        Vector3 originVector = moveVector;
+        Vector3[] planes = new Vector3[MAX_CLIP_PLANES];
+        RaycastHit currentHit;
+
+        int pi, pj;
 
         //푸쉬 백(오버랩핑)
-        int pushBacks = BoxPushBack(_internalPosition, playerCollider, out Vector3[] pbVec);
+        int pushBacks = BoxPushBack(_internalPosition, playerCollider, out Vector3 pbVec);
+        bool hasPushBackPlane = false;
 
         if (pushBacks > 0)
         {
-            for (int i = 0; i < pushBacks; i++)
+            Velocity = Vector3.zero;
+            
+            if (pbVec.sqrMagnitude > 0)
             {
-                _internalPosition += pbVec[i].normalized * (pbVec[i].magnitude + MIN_PUSHBACK_DIST);
+                _internalPosition += pbVec.normalized * (pbVec.magnitude + MIN_PUSHBACK_DIST);
 
-                if (pbVec[i].sqrMagnitude > 0)
-                {
-                    Vector3 newVel = -Vector3.Project(initMoveVector, pbVec[i].normalized);
-                    initMoveVector -= Vector3.ProjectOnPlane(initMoveVector, newVel.normalized);
-                }
+                moveVector -= Vector3.Project(moveVector, -pbVec.normalized);
+                planes[numPlanes++] = pbVec.normalized;
+                hasPushBackPlane = true;
             }
+            //return 4;
         }
 
         //스윕
-        int numBump = 0;
-        int bumpCount = MAX_MOVE_ITERATION;
-        Vector3 originDir = initMoveVector.normalized;
-        Vector3 prevPlaneNormal = Vector3.zero;
-
-        for (numBump = 0; numBump < bumpCount; numBump++)
+        for (numBumps = 0; numBumps < bumpCount; numBumps++)
         {
-            int hitCount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider, out RaycastHit hit);
-            if (hitCount > 0)
+            if (moveVector.magnitude == 0.0f)
+                break;
+
+            var nextVec = moveVector * timeleft;
+
+            currentHit = BoxTrace(nextVec.normalized, nextVec.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+            currentHit.distance = Mathf.Max(0.0f, currentHit.distance - COLLISION_OFFSET);
+            var fraction = currentHit.distance / nextVec.magnitude;
+            allFraction += fraction;
+
+            if (fraction > 0.0f)
             {
-                var dist = Mathf.Max(0.0f, hit.distance - COLLISION_OFFSET);
+                _internalPosition += currentHit.distance * nextVec.normalized;
+                originVector = moveVector;
+                numPlanes = hasPushBackPlane ? numPlanes : 0;
+                hasPushBackPlane = false;
+            }
 
-                _internalPosition += dist * initMoveVector.normalized;
-                initMoveVector -= dist * initMoveVector.normalized;
+            if (fraction == 1.0f)
+                break;
 
-                ClipVelocity(initMoveVector, hit.normal, out Vector3 outVec);
+            if (currentHit.normal.y > 0.7f)
+            {
+                blocked |= 1;    //바닥
+            }
 
-                if(numBump > 0)
-                {
-                    var creaseDir = Vector3.Cross(hit.normal, prevPlaneNormal).normalized;
-                    outVec = Vector3.Project(initMoveVector, creaseDir);
-                }
+            if (currentHit.normal.y == 0.0f)
+            {
+                blocked |= 2;    //벽 혹은 계단
+            }
 
-                initMoveVector = outVec;
+            timeleft -= timeleft * fraction;
 
-                prevPlaneNormal = hit.normal;
+            if (numPlanes >= MAX_CLIP_PLANES)
+            {
+                Velocity = Vector3.zero;
+                break;
+            }
+
+            planes[numPlanes++] = currentHit.normal;
+
+            for (pi = 0; pi < numPlanes; pi++)
+            {
+                ClipVelocity(originVector, planes[pi], out moveVector);
+                for (pj = 0; pj < numPlanes; pj++)
+                    if (pj != pi)
+                    {
+                        if (Vector3.Dot(moveVector, planes[pj]) < 0)
+                            break;
+                    }
+                if (pj == numPlanes)
+                    break;
+            }
+
+            if (pi != numPlanes)
+            {
+
             }
             else
             {
-                _internalPosition += initMoveVector;
+                if (numPlanes != 2)
+                {
+                    Velocity = Vector3.zero;
+                    break;
+                }
+                var creaseDir = Vector3.Cross(planes[0], planes[1]);
+                moveVector = creaseDir * Vector3.Dot(creaseDir, moveVector);
+            }
+
+            if (Vector3.Dot(moveVector, originVector) <= 0)
+            {
+                Velocity = Vector3.zero;
                 break;
             }
         }
+
+        //푸쉬 백(오버랩핑)
+        pushBacks = BoxPushBack(_internalPosition, playerCollider, out pbVec);
+
+        if (pushBacks > 0)
+        {
+            if (pbVec.sqrMagnitude > 0)
+            {
+                _internalPosition += pbVec.normalized * (pbVec.magnitude + MIN_PUSHBACK_DIST);
+            }
+        }
+
+        if (allFraction == 0)
+        {
+            moveVector = Vector3.zero;
+        }
+
+        Velocity = moveVector;
+
+        return blocked;
     }
 
     /// <summary>
@@ -170,10 +687,10 @@ public class Move : MonoBehaviour
     /// <param name="wishDir">방향</param>
     /// <param name="wishDist">거리</param>
     /// <param name="initialPos">초기 위치</param>
-    /// <param name="box">플레이어 콜라이더</param>
+    /// <param name="box">콜라이더</param>
     /// <param name="closestHit">가장 가까운 히트</param>
     /// <returns>유효한 충돌 수</returns>
-    int BoxSweepTest(Vector3 wishDir, float wishDist, Vector3 initialPos,BoxCollider box,out RaycastHit closestHit)
+    int BoxSweepTest(Vector3 wishDir, float wishDist, Vector3 initialPos, BoxCollider box,out RaycastHit closestHit)
     {
         var hitCount = Physics.BoxCastNonAlloc(
             initialPos + box.center + (wishDir * -SWEEP_TEST_EPSILON), 
@@ -193,60 +710,100 @@ public class Move : MonoBehaviour
             _moveHits[i].distance -= SWEEP_TEST_EPSILON;
             if (_moveHits[i].distance < closestDistInLoop)
             {
-                if (_moveHits[i].distance <= 0f
+                if (_moveHits[i].collider == box
                     || _moveHits[i].collider.isTrigger
-                    || _moveHits[i].collider == box)
+                    || _moveHits[i].distance < 0f)
                 {
                     validHitCount--;
                     continue;
                 }
+
                 closestDistInLoop = _moveHits[i].distance;
                 closestHitInLoop = _moveHits[i];
             }
         }
 
         closestHit = closestHitInLoop;
-        
+        closestHit.distance = Mathf.Max(0.0f, closestHit.distance);
 
         return validHitCount;
     }
 
-    int BoxSweepFTest(Vector3 wishDir, float wishDist, Vector3 initialPos, BoxCollider box, out RaycastHit closestHit)
+    /// <summary>
+    /// 퀘이크 엔진 TraceBBox용 메소드
+    /// </summary>
+    /// <param name="wishDir">방향</param>
+    /// <param name="wishDist">거리</param>
+    /// <param name="pos">위치</param>
+    /// <param name="box">콜라이더</param>
+    /// <returns></returns>
+    RaycastHit BoxTrace(Vector3 wishDir, float wishDist, Vector3 pos, BoxCollider box)
     {
+        RaycastHit closestHit = new RaycastHit();
+        closestHit.distance = wishDist;
 
-        Vector3 skinHE = new Vector3(skinWidth, skinWidth, skinWidth);
         var hitCount = Physics.BoxCastNonAlloc(
-            initialPos + box.center,
-            box.size * 0.5f - skinHE, wishDir,
+            pos + box.center + (wishDir * -SWEEP_TEST_EPSILON),
+            box.size * 0.5f, wishDir,
             _moveHits, Quaternion.identity,
-            wishDist + skinWidth,
+            wishDist + SWEEP_TEST_EPSILON,
             -1,
             QueryTriggerInteraction.Ignore);
 
         var closestDistInLoop = Mathf.Infinity;
-        var closestHitInLoop = new RaycastHit();
-        int validHit = hitCount;
 
         for (int i = 0; i < hitCount; i++)
         {
-            _moveHits[i].distance -= skinWidth;
+            _moveHits[i].distance -= SWEEP_TEST_EPSILON;
             if (_moveHits[i].distance < closestDistInLoop)
             {
-                if (_moveHits[i].distance <= skinWidth
-                    || _moveHits[i].collider.isTrigger 
-                    || _moveHits[i].collider == box)
+                if(_moveHits[i].collider == box
+                   || _moveHits[i].collider.isTrigger
+                   || _moveHits[i].distance <= 0f)
                 {
-                    validHit--;
                     continue;
                 }
+
                 closestDistInLoop = _moveHits[i].distance;
-                closestHitInLoop = _moveHits[i];
+                closestHit = _moveHits[i];
             }
         }
 
-        closestHit = closestHitInLoop;
+        return closestHit;
+    }
 
-        return validHit;
+    RaycastHit BoxTraceNonFilter(Vector3 wishDir, float wishDist, Vector3 pos, BoxCollider box)
+    {
+        RaycastHit closestHit = new RaycastHit();
+        closestHit.distance = wishDist;
+
+        var hitCount = Physics.BoxCastNonAlloc(
+            pos + box.center + (wishDir * -SWEEP_TEST_EPSILON),
+            box.size * 0.5f, wishDir,
+            _moveHits, Quaternion.identity,
+            wishDist + SWEEP_TEST_EPSILON,
+            -1,
+            QueryTriggerInteraction.Ignore);
+
+        var closestDistInLoop = Mathf.Infinity;
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            _moveHits[i].distance -= SWEEP_TEST_EPSILON;
+            if (_moveHits[i].distance < closestDistInLoop)
+            {
+                if (_moveHits[i].collider == box
+                   || _moveHits[i].collider.isTrigger)
+                {
+                    continue;
+                }
+
+                closestDistInLoop = _moveHits[i].distance;
+                closestHit = _moveHits[i];
+            }
+        }
+
+        return closestHit;
     }
 
     /// <summary>
@@ -257,9 +814,11 @@ public class Move : MonoBehaviour
     /// <param name="pbVec"></param>
     /// <param name="skinWidth"></param>
     /// <returns>유효한 겹침상태 수</returns>
-    int BoxPushBack(Vector3 initialPos, BoxCollider box, out Vector3[] pbVec, float skinWidth = 0f)
+    int BoxPushBack(Vector3 initialPos, BoxCollider box, out Vector3 pbVec, float skinWidth = 0f)
     {
-        pbVec = new Vector3[_overlapCols.Length];
+        pbVec = Vector3.zero;
+
+        var savedVectors = new Vector3[MAX_OVERLAP_COLS];
 
         var overlaps = Physics.OverlapBoxNonAlloc(initialPos + box.center, (box.size * 0.5f) + Vector3.one * skinWidth, _overlapCols, Quaternion.identity, -1, QueryTriggerInteraction.Ignore);
 
@@ -267,8 +826,6 @@ public class Move : MonoBehaviour
 
         if (overlaps > 0)
         {
-            var pbDir = Vector3.zero;
-            var pbDist = 0f;
             var elmentCount = 0;
 
             for(int i = 0; i < overlaps; i++)
@@ -284,14 +841,25 @@ public class Move : MonoBehaviour
                 Vector3 otherPosition = other.gameObject.transform.position;
                 Quaternion otherRotation = other.gameObject.transform.rotation;
 
-                if (Physics.ComputePenetration(box, initialPos + box.center, Quaternion.identity, other, otherPosition, otherRotation,
-                        out pbDir, out pbDist))
+                if (Physics.ComputePenetration(box, initialPos, Quaternion.identity, other, otherPosition, otherRotation,
+                        out var pbDir, out var pbDist))
                 {
-                    pbVec[elmentCount++] = pbDir * pbDist;
+                    savedVectors[elmentCount++] = pbDir * pbDist;
                 }
                 else
                 {
                     validOverlaps--;
+                }
+            }
+
+            var farthestDist = -1f;
+            
+            for (int i = 0; i < elmentCount; i++)
+            {
+                if (savedVectors[i].sqrMagnitude > farthestDist)
+                {
+                    farthestDist = savedVectors[i].sqrMagnitude;
+                    pbVec = savedVectors[i];
                 }
             }
         }
@@ -322,12 +890,16 @@ public class Move : MonoBehaviour
         {
             change = normal[i] * backoff;
             outputVelocity[i] = inputVelocity[i] - change;
+            //if (outputVelocity[i] > -0.1f && outputVelocity[i] < 0.1f)
+            //{
+            //    outputVelocity[i] = 0;
+            //}
         }
 
         float adjust = Vector3.Dot(outputVelocity, normal);
-        if(adjust < 0.0f)
+        if (adjust < 0.0f)
         {
-            outputVelocity -= (normal * adjust);
+            outputVelocity -= normal * adjust;
         }
 
         return blocked;
@@ -340,77 +912,129 @@ public class Move : MonoBehaviour
 
         var initMoveVector = debugMoveVector; //camHolder.TransformVector(new Vector3(_inputX, _inputZ, _inputY).normalized * speed * Time.fixedDeltaTime);
 
-        var constantWishPos = transform.position + playerCollider.center + initMoveVector;
-        Gizmos.color = Color.green;
-        Gizmos.DrawCube(constantWishPos, playerCollider.size);
-        Gizmos.DrawLine(transform.position, constantWishPos);
 
-        int pushBacks = BoxPushBack(_internalPosition, playerCollider, out Vector3[] pbVec);
+        var tmpPosition = transform.position;
+
+        int blocked = 0;
+        int numPlanes = 0;
+        int numBumps = 0;
+        int bumpCount = MAX_MOVE_ITERATION;
+
+        float timeleft = debugMoveDeltaTime;
+
+        Vector3 originVector = initMoveVector;
+        Vector3[] planes = new Vector3[MAX_CLIP_PLANES];
+        RaycastHit currentHit = new RaycastHit();
+
+        int pi, pj;
+
+        int pushBacks = BoxPushBack(tmpPosition, playerCollider, out Vector3 pbVec);
+        bool isPush = false;
 
         if (pushBacks > 0)
         {
-            for (int i = 0; i < pushBacks; i++)
+            if (pbVec.sqrMagnitude > 0)
             {
-                Debug.Log(pbVec[i]);
-                Debug.DrawRay(transform.position, pbVec[i], Color.cyan);
+                tmpPosition += pbVec.normalized * (pbVec.magnitude + MIN_PUSHBACK_DIST);
 
-                _internalPosition += pbVec[i].normalized * (pbVec[i].magnitude + COLLISION_OFFSET);
-
-                if (pbVec[i].sqrMagnitude > 0)
-                {
-                    Vector3 newVel = -Vector3.Project(initMoveVector, pbVec[i].normalized);
-                    initMoveVector -= Vector3.ProjectOnPlane(initMoveVector, newVel.normalized);
-                }
+                initMoveVector -= Vector3.Project(initMoveVector, -pbVec.normalized);
+                //planes[numPlanes++] = pbVec.normalized;
+                isPush = true;
             }
         }
+        if (isPush)
+            Gizmos.DrawWireCube(tmpPosition + playerCollider.center, playerCollider.size);
 
-        int bumpCount = MAX_MOVE_ITERATION;
-        int numBump = 0;
-        var tmpPosition = transform.position;
-        var originDir = initMoveVector.normalized;
-        var prevPlaneNormal = Vector3.zero;
+        var constantWishPos = tmpPosition + (initMoveVector * debugMoveDeltaTime);
 
-        for (numBump = 0; numBump < bumpCount; numBump++)
+
+
+        for (numBumps = 0; numBumps < bumpCount; numBumps++)
         {
-            Gizmos.color = Color.yellow + new Color(-numBump/4f,-numBump/4f,0f);
-            var hitcount = BoxSweepTest(initMoveVector.normalized, initMoveVector.magnitude + COLLISION_OFFSET, tmpPosition, playerCollider, out RaycastHit hit);
+            Gizmos.color = Color.yellow + new Color(-numBumps / 4f, -numBumps / 4f, 0f);
+
+            if (initMoveVector.magnitude == 0.0f)
+                break;
+
+            var nextVec = initMoveVector * timeleft;
             var lastTmpPos = tmpPosition;
+            currentHit = BoxTrace(nextVec.normalized, nextVec.magnitude + COLLISION_OFFSET, tmpPosition, playerCollider);
+            currentHit.distance = Mathf.Max(0.0f, currentHit.distance - COLLISION_OFFSET);
+            var fraction = currentHit.distance / nextVec.magnitude;
 
-            if (hitcount > 0)
+            if (fraction > 0.0f)
             {
-                var dist = Mathf.Max(0.0f, hit.distance - COLLISION_OFFSET);
-                tmpPosition += dist * initMoveVector.normalized;
-                Gizmos.DrawWireCube(tmpPosition, playerCollider.size);
-                Gizmos.DrawLine(lastTmpPos, tmpPosition);
+                tmpPosition += currentHit.distance * nextVec.normalized;
+                Gizmos.DrawWireCube(tmpPosition + playerCollider.center, playerCollider.size);
+                Gizmos.DrawLine(lastTmpPos + playerCollider.center, tmpPosition + playerCollider.center);
                 Gizmos.color = Color.red;
-                Gizmos.DrawRay(hit.point, hit.normal);
-                Gizmos.DrawSphere(hit.point, 0.05f);
+                Gizmos.DrawRay(currentHit.point, currentHit.normal);
+                Gizmos.DrawSphere(currentHit.point, 0.05f);
+                numPlanes = 0;
+                //numPlanes = isPush ? numPlanes : 0;
+                //isPush = false;
+            }
 
-                initMoveVector -= dist * initMoveVector.normalized;
+            if (fraction == 1.0f)
+            {
+                Gizmos.color = Color.yellow;
+                Gizmos.DrawWireCube(tmpPosition + playerCollider.center, playerCollider.size);
+                Gizmos.DrawLine(lastTmpPos + playerCollider.center, tmpPosition + playerCollider.center);
+                break;
+            }
+               
 
-                ClipVelocity(initMoveVector, hit.normal, out Vector3 outVec);
+            if (currentHit.normal.y > 0.7f)
+            {
+                blocked |= 1;    //바닥
+            }
 
-                if (numBump > 0)
-                {
-                    Gizmos.color = Color.blue;
+            if (currentHit.normal.y == 0.0f)
+            {
+                blocked |= 2;    //벽 혹은 계단
+            }
 
+            timeleft -= timeleft * fraction;
 
-                    var creaseDir = Vector3.Cross(hit.normal, prevPlaneNormal).normalized;
-                    Gizmos.DrawRay(hit.point, creaseDir);
+            if (numPlanes >= MAX_CLIP_PLANES)
+            {
+                //Velocity = Vector3.zero;
+                break;
+            }
 
-                    outVec = Vector3.Project(initMoveVector, creaseDir);
-                    Gizmos.color = Color.red;
-                }
+            planes[numPlanes++] = currentHit.normal;
 
-                initMoveVector = outVec;
+            for (pi = 0; pi < numPlanes; pi++)
+            {
+                ClipVelocity(originVector, planes[pi], out initMoveVector);
+                for (pj = 0; pj < numPlanes; pj++)
+                    if (pj != pi)
+                    {
+                        if (Vector3.Dot(initMoveVector, planes[pj]) < 0)
+                            break;
+                    }
+                if (pj == numPlanes)
+                    break;
+            }
 
-                prevPlaneNormal = hit.normal;
+            if (pi != numPlanes)
+            {
+
             }
             else
             {
-                tmpPosition += initMoveVector;
-                Gizmos.DrawWireCube(tmpPosition, playerCollider.size);
-                Gizmos.DrawLine(lastTmpPos, tmpPosition);
+                //if (numPlanes != 2)
+                //{
+                //    //Velocity = Vector3.zero;
+                //    break;
+                //}
+                var creaseDir = Vector3.Cross(planes[0], planes[1]);
+                initMoveVector = creaseDir * Vector3.Dot(creaseDir, initMoveVector);
+            }
+
+            if (Vector3.Dot(initMoveVector, originVector) <= 0)
+            {
+                //Velocity = Vector3.zero;
                 break;
             }
         }
@@ -419,7 +1043,14 @@ public class Move : MonoBehaviour
 
         Gizmos.color -= new Color(0, 0, 0, 0.3f);
 
-        Gizmos.DrawCube(tmpPosition, playerCollider.size - Vector3.one * 0.002f);
+        
+        Gizmos.DrawCube(tmpPosition + playerCollider.center, playerCollider.size - Vector3.one * 0.002f);
+
+        Gizmos.color = tmpPosition != constantWishPos ? Color.yellow : Color.green;
+
+        Gizmos.DrawCube(constantWishPos + playerCollider.center, playerCollider.size);
+        Gizmos.DrawLine(transform.position + playerCollider.center, constantWishPos + playerCollider.center);
+
     }
 
 }
