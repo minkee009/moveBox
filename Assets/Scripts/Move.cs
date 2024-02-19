@@ -13,20 +13,21 @@ public class Move : MonoBehaviour
     public bool showDebugMovement;
     public Vector3 debugMoveVector;
     public float debugMoveDeltaTime = 0.02f;
-    public Vector3 Velocity { get; private set; }
+    public Vector3 Velocity => _velocity;
 
     private RaycastHit[] _moveHits = new RaycastHit[5];
     private Vector3 _internalPosition = Vector3.zero;
     private Vector3 _lastTickPostion = Vector3.zero;
     private Collider[] _overlapCols = new Collider[MAX_OVERLAP_COLS];
+    private Vector3 _velocity;
 
     public Text velocityText;
 
     public bool AutoJumping;
     public float speed;
 
-    const float SWEEP_TEST_EPSILON = 0.0002f;
-    const float COLLISION_OFFSET = 0.002f;
+    const float SWEEP_TEST_EPSILON = 0.002f;
+    const float COLLISION_OFFSET = 0.01f;
     const int MAX_OVERLAP_COLS = 3;
     const int MAX_MOVE_ITERATION = 4;
     const int MAX_CLIP_PLANES = 5;
@@ -52,19 +53,17 @@ public class Move : MonoBehaviour
         playerCollider = GetComponent<BoxCollider>();
         playerRigidbody = GetComponent<Rigidbody>();
         _internalPosition = transform.position;
-    }
 
-    Vector3 currentVelocity = Vector3.zero;
+
+        //자리 잡기
+        CategorizePosition();
+        if (!ReferenceEquals(_ground,null))
+            StayOnGround();
+
+    }
 
     private void Update()
     {
-        // _internalPosition = transform.position;
-        //_internalPosition = transform.position;
-        //if (Input.GetKeyDown(KeyCode.Space))
-        //{
-        //    TryPlayerMove(debugMoveVector, debugMoveDeltaTime);
-        //}
-
         velocityText.text = Mathf.RoundToInt(Velocity.magnitude * 52.5f).ToString();
 
         if (!_jumpButtonPressed)
@@ -73,8 +72,6 @@ public class Move : MonoBehaviour
         _inputX = (Input.GetKey(KeyCode.A) ? -1 : 0) + (Input.GetKey(KeyCode.D) ? 1 : 0);
         _inputY = (Input.GetKey(KeyCode.S) ? -1 : 0) + (Input.GetKey(KeyCode.W) ? 1 : 0);
         _inputZ = 0f;//(Input.GetKey(KeyCode.Q) ? -1 : 0) + (Input.GetKey(KeyCode.E) ? 1 : 0);
-
-        _scaledMoveInput = new Vector3(_inputX, _inputY, _inputZ).normalized;
     }
 
     float _lastTickTime = 0f;
@@ -106,13 +103,11 @@ public class Move : MonoBehaviour
 
     void CategorizePosition()
     {
-        float zvel = Velocity.y;
+        float zvel = _velocity.y;
         //bool bMovingUp = zvel > 0.0f;
         bool bMobingUpRapidly = zvel > NON_JUMP_VELOCITY;
 
         _surfaceFriction = 1.0f;
-
-        //Debug.Log(zvel);
 
         if(bMobingUpRapidly)
         {
@@ -123,14 +118,14 @@ public class Move : MonoBehaviour
             var start = _internalPosition;
             var end = _internalPosition + (Vector3.down * 0.0381f);
             var dest = end - start;
-            var pm = BoxTraceNonFilter(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+            var pm = BoxTrace(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider, false);
             pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
             //var fraction = pm.distance / dest.magnitude;
 
             if (ReferenceEquals(pm.transform, null) || pm.normal.y < 0.7f)
             {
                 SetGroundEntity(new RaycastHit());
-                if (Velocity.y > 0.0f)
+                if (_velocity.y > 0.0f)
                     _surfaceFriction = 0.25f;
             }
             else 
@@ -168,7 +163,7 @@ public class Move : MonoBehaviour
         {
             _surfaceFriction = Mathf.Min(1.0f,_surfaceFriction * 1.25f);
 
-            Velocity = new Vector3(Velocity.x, 0f, Velocity.z);
+            _velocity.y = 0f;
         }
     }
 
@@ -177,10 +172,10 @@ public class Move : MonoBehaviour
     void CheckVelocity()
     {
         var sv_maxvelocity = 66.675f;
-        var correctVel = Velocity;
+        var correctVel = _velocity;
         for(int i = 0; i < 3; i++)
         {
-            if (float.IsNaN(Velocity[i]))
+            if (float.IsNaN(_velocity[i]))
                 correctVel[i] = 0.0f;
 
             if (correctVel[i] > sv_maxvelocity)
@@ -189,7 +184,7 @@ public class Move : MonoBehaviour
                 correctVel[i] = -sv_maxvelocity;
         }
 
-        Velocity = correctVel;
+        _velocity = correctVel;
     }
 
     void CheckParameters()
@@ -221,14 +216,14 @@ public class Move : MonoBehaviour
     {
         CheckParameters();
 
-        if(Velocity.y > 4.7625f)
+        if(_velocity.y > 4.7625f)
         {
             SetGroundEntity(new RaycastHit()); //null 셋팅
         }
 
         if (ReferenceEquals(_ground, null))
         {
-            _fallVelocity = -Velocity.y;
+            _fallVelocity = -_velocity.y;
         }
 
         //Duck(); //앉기 관련 코드
@@ -239,7 +234,7 @@ public class Move : MonoBehaviour
     void FullWalkMove()
     {
         var sv_gravity = 15.24f;
-        Velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
+        _velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
         CheckVelocity();
         //BaseVelocity = new Vector3(BaseVelocity.x,0f,BaseVelocity.z);
         //속도 NaN 체크
@@ -251,7 +246,7 @@ public class Move : MonoBehaviour
 
         if(!ReferenceEquals(_ground, null))
         {
-            Velocity = new Vector3(Velocity.x, 0f, Velocity.z);
+            _velocity.y = 0f;
             Friction();
         }
 
@@ -270,12 +265,12 @@ public class Move : MonoBehaviour
 
         CheckVelocity();
 
-        Velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
+        _velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
         CheckVelocity();
 
         if (!ReferenceEquals(_ground,null))
         {
-            Velocity = new Vector3(Velocity.x,0f,Velocity.z);
+            _velocity.y = 0f;
         }
 
         //CheckFalling();
@@ -320,7 +315,7 @@ public class Move : MonoBehaviour
 
         AirAccelerate(ref wishdir, wishspeed, sv_airaccelerate);
 
-        TryPlayerMove(Velocity, Time.deltaTime);
+        TryPlayerMove(ref _velocity, Time.deltaTime);
     }
 
     void WalkMove()
@@ -352,22 +347,22 @@ public class Move : MonoBehaviour
         }
 
         var sv_accelerate = 5.6f; //계수인지 유닛인지 몰?루 <- 계수로 추정
-        Velocity = new Vector3(Velocity.x, 0f, Velocity.z);
+        _velocity.y = 0f;
         Accelerate(ref wishdir, wishspeed, sv_accelerate);
-        Velocity = new Vector3(Velocity.x, 0f, Velocity.z);
+        _velocity.y = 0f;
 
         //Velocity += BaseVelocity;
 
-        spd = Velocity.magnitude;
+        spd = _velocity.magnitude;
 
-        if(spd < 0.01905f)
+        if (spd < 0.01905f)
         {
-            Velocity = Vector3.zero;
+            _velocity = Vector3.zero;
             //Velocity -= Basevelocity;
             return;
         }
 
-        dest = new Vector3(Velocity.x, 0f, Velocity.z) * Time.deltaTime;
+        dest = new Vector3(_velocity.x, 0f, _velocity.z) * Time.deltaTime;
         //mv->m_outWishVel += wishdir * wishspeed;
 
 
@@ -399,19 +394,19 @@ public class Move : MonoBehaviour
     void StepMove()
     {
         var initPos = _internalPosition;
-        var initVel = Velocity;
+        var initVel = _velocity;
 
-        TryPlayerMove(Velocity, Time.deltaTime);
+        TryPlayerMove(ref _velocity, Time.deltaTime);
 
         var downPos = _internalPosition;
-        var downVel = Velocity;
+        var downVel = _velocity;
 
         _internalPosition = initPos;
-        Velocity = initVel;
+        _velocity = initVel;
 
         var sv_stepsize = 0.3429f;
         var dest = Vector3.up * sv_stepsize;
-        var pm = BoxTraceNonFilter(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+        var pm = BoxTrace(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
         pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
 
         var fraction = pm.distance / dest.magnitude;
@@ -421,7 +416,7 @@ public class Move : MonoBehaviour
             _internalPosition += pm.distance * dest.normalized;
         }
 
-        TryPlayerMove(Velocity, Time.deltaTime);
+        TryPlayerMove(ref _velocity, Time.deltaTime);
 
         dest = Vector3.down * sv_stepsize;
         pm = BoxTrace(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
@@ -433,7 +428,7 @@ public class Move : MonoBehaviour
             && pm.normal.y < 0.7f)
         {
             _internalPosition = downPos;
-            Velocity = downVel;
+            _velocity = downVel;
             return;
         }
 
@@ -448,11 +443,11 @@ public class Move : MonoBehaviour
         if(downdist > updist)
         {
             _internalPosition = downPos;
-            Velocity = downVel;
+            _velocity = downVel;
         }
         else
         {
-            Velocity = new Vector3(Velocity.x, downVel.y, Velocity.z);
+            _velocity.y = downVel.y;
         }
     }
 
@@ -480,13 +475,22 @@ public class Move : MonoBehaviour
         {
             _internalPosition = start + dest.normalized * (pm.distance);
         }
+        var pushBacks = BoxPushBack(_internalPosition, playerCollider, out var pbVec);
+
+        if (pushBacks > 0)
+        {
+            if (pbVec.sqrMagnitude > 0)
+            {
+                _internalPosition += pbVec.normalized * (pbVec.magnitude + MIN_PUSHBACK_DIST);
+            }
+        }
     }
 
     void Accelerate(ref Vector3 wishdir, float wishspeed, float accel)
     {
         float addspeed, accelspeed, currentspeed;
 
-        currentspeed = Vector3.Dot(Velocity,wishdir);
+        currentspeed = Vector3.Dot(_velocity, wishdir);
 
         addspeed = wishspeed - currentspeed;
 
@@ -498,7 +502,7 @@ public class Move : MonoBehaviour
         if(accelspeed >addspeed)
             accelspeed = addspeed;
 
-        Velocity += wishdir * accelspeed;
+        _velocity += wishdir * accelspeed;
     }
 
     void AirAccelerate(ref Vector3 wishdir, float wishspeed, float accel)
@@ -511,7 +515,7 @@ public class Move : MonoBehaviour
         if (wishspd > 0.5715f) //GetAirSpeedCap() => 30.0f 하드코딩
             wishspd = 0.5715f;
 
-        currentspeed = Vector3.Dot(Velocity,wishdir);
+        currentspeed = Vector3.Dot(_velocity, wishdir);
 
         addspeed = wishspd - currentspeed;
 
@@ -523,7 +527,7 @@ public class Move : MonoBehaviour
         if(accelspeed > addspeed)
             accelspeed = addspeed;
 
-        Velocity += accelspeed * wishdir;
+        _velocity += accelspeed * wishdir;
     }
 
     bool CheckJumpButton()
@@ -539,8 +543,8 @@ public class Move : MonoBehaviour
         var flMul = 5.111651396564518f;
         var sv_gravity = 15.24f;
 
-        Velocity = new Vector3(Velocity.x, flMul, Velocity.z);
-        Velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
+        _velocity.y = flMul;
+        _velocity -= Vector3.up * (sv_gravity * 0.5f * Time.deltaTime);
         //duckjump 시간 설정
 
         return true;
@@ -555,7 +559,7 @@ public class Move : MonoBehaviour
         var sv_friction = 4f; //계수인지 유닛인지 몰?루 -> 계수로 추정됨, 유닛인 경우 0.01905f 곱하기
         var sv_stopspeed = 1.905f;
 
-        speed = Velocity.magnitude;
+        speed = _velocity.magnitude;
         if (speed < 0.001905f)
         {
             return;
@@ -579,7 +583,7 @@ public class Move : MonoBehaviour
         {
             newspeed /= speed;
 
-            Velocity *= newspeed;
+            _velocity *= newspeed;
         }
 
         //outWishVel -= (0.01905f - newspeed) * Velocity;
@@ -590,7 +594,7 @@ public class Move : MonoBehaviour
     /// </summary>
     /// <param name="moveVector"></param>
     /// <param name="deltaTime"></param>
-    int TryPlayerMove(Vector3 moveVector, float deltaTime)
+    int TryPlayerMove(ref Vector3 moveVector, float deltaTime)
     {
         int blocked = 0;
         int numPlanes = 0;
@@ -610,21 +614,18 @@ public class Move : MonoBehaviour
 
         //푸쉬 백(오버랩핑)
         int pushBacks = BoxPushBack(_internalPosition, playerCollider, out Vector3 pbVec);
-        bool hasPushBackPlane = false;
+        //bool hasPushBackPlane = false;
 
         if (pushBacks > 0)
         {
-            Velocity = Vector3.zero;
-            
             if (pbVec.sqrMagnitude > 0)
             {
                 _internalPosition += pbVec.normalized * (pbVec.magnitude + MIN_PUSHBACK_DIST);
 
                 moveVector -= Vector3.Project(moveVector, -pbVec.normalized);
-                //planes[numPlanes++] = pbVec.normalized;
+                planes[numPlanes++] = pbVec.normalized;
                 //hasPushBackPlane = true;
             }
-            //return 4;
         }
 
         //스윕
@@ -634,7 +635,7 @@ public class Move : MonoBehaviour
                 break;
 
             var nextVec = moveVector * timeleft;
-            currentHit = BoxTraceNonFilter(nextVec.normalized, nextVec.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
+            currentHit = BoxTrace(nextVec.normalized, nextVec.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider);
             currentHit.distance = Mathf.Max(0.0f, currentHit.distance - COLLISION_OFFSET);
             
             var fraction = currentHit.distance / nextVec.magnitude;
@@ -644,7 +645,7 @@ public class Move : MonoBehaviour
             {
                 _internalPosition += currentHit.distance * nextVec.normalized;
                 originVector = moveVector;
-                numPlanes = 0;
+                //numPlanes = 0;
                 //numPlanes = hasPushBackPlane ? numPlanes : 0;
                 //hasPushBackPlane = false;
             }
@@ -672,7 +673,7 @@ public class Move : MonoBehaviour
 
             planes[numPlanes++] = currentHit.normal;
 
-            var sv_bounce = 0f;
+            //var sv_bounce = 0f;
 
             //if (numPlanes == 1
             //    //&& GetMoveType() == MOVETYPE_WALK
@@ -691,7 +692,7 @@ public class Move : MonoBehaviour
             //        else
             //        {
             //            q = 2;
-            //            ClipVelocity(originVector, planes[pi], out newVector,1);
+            //            ClipVelocity(originVector, planes[pi], out newVector,1.0f + sv_bounce * (1 - _surfaceFriction));
             //        }
             //    }
             //    Debug.Log(q);
@@ -722,11 +723,11 @@ public class Move : MonoBehaviour
             }
             else
             {
-                if (numPlanes != 2)
-                {
-                    //moveVector = Vector3.zero;
-                    break;
-                }
+                //if (numPlanes != 2)
+                //{
+                //    //moveVector = Vector3.zero;
+                //    break;
+                //}
                 var creaseDir = Vector3.Cross(planes[0], planes[1]);
                 creaseDir.Normalize();
                 moveVector = creaseDir * Vector3.Dot(creaseDir, moveVector);
@@ -754,8 +755,6 @@ public class Move : MonoBehaviour
         {
             moveVector = Vector3.zero;
         }
-
-        Velocity = moveVector;
 
         return blocked;
     }
@@ -816,7 +815,7 @@ public class Move : MonoBehaviour
     /// <param name="pos">위치</param>
     /// <param name="box">콜라이더</param>
     /// <returns></returns>
-    RaycastHit BoxTrace(Vector3 wishDir, float wishDist, Vector3 pos, BoxCollider box)
+    RaycastHit BoxTrace(Vector3 wishDir, float wishDist, Vector3 pos, BoxCollider box, bool filtZeroDist = true)
     {
         RaycastHit closestHit = new RaycastHit();
         closestHit.distance = wishDist;
@@ -838,7 +837,7 @@ public class Move : MonoBehaviour
             {
                 if(_moveHits[i].collider == box
                    || _moveHits[i].collider.isTrigger
-                   || _moveHits[i].distance <= 0f)
+                   || (filtZeroDist && _moveHits[i].distance <= 0f))
                 {
                     continue;
                 }
