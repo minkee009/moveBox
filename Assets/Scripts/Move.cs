@@ -118,7 +118,7 @@ public class Move : MonoBehaviour
             var start = _internalPosition;
             var end = _internalPosition + (Vector3.down * 0.0381f);
             var dest = end - start;
-            var pm = BoxTrace(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider, false);
+            var pm = BoxTrace(dest.normalized, dest.magnitude + COLLISION_OFFSET, _internalPosition, playerCollider, true);
             pm.distance = Mathf.Max(0.0f, pm.distance - COLLISION_OFFSET);
             //var fraction = pm.distance / dest.magnitude;
 
@@ -968,10 +968,6 @@ public class Move : MonoBehaviour
         {
             change = normal[i] * backoff;
             outputVelocity[i] = inputVelocity[i] - change;
-            //if (outputVelocity[i] > -0.1f && outputVelocity[i] < 0.1f)
-            //{
-            //    outputVelocity[i] = 0;
-            //}
         }
 
         float adjust = Vector3.Dot(outputVelocity, normal);
@@ -984,7 +980,7 @@ public class Move : MonoBehaviour
     }
 
     //디버깅용 가시화
-    private void OnDrawGizmos()
+    /*private void OnDrawGizmos()
     {
         if (!showDebugMovement) return;
 
@@ -1129,6 +1125,6 @@ public class Move : MonoBehaviour
         Gizmos.DrawCube(constantWishPos + playerCollider.center, playerCollider.size);
         Gizmos.DrawLine(transform.position + playerCollider.center, constantWishPos + playerCollider.center);
 
-    }
+    }*/
 
 }
