@@ -284,9 +284,10 @@ public class Move : MonoBehaviour
                 Vector3 otherPosition = other.gameObject.transform.position;
                 Quaternion otherRotation = other.gameObject.transform.rotation;
 
-                if (Physics.ComputePenetration(box, initialPos + box.center, Quaternion.identity, other, otherPosition, otherRotation,
+                if (Physics.ComputePenetration(box, initialPos, Quaternion.identity, other, otherPosition, otherRotation,
                         out pbDir, out pbDist))
                 {
+                    initialPos += pbDir * pbDist;
                     pbVec[elmentCount++] = pbDir * pbDist;
                 }
                 else
